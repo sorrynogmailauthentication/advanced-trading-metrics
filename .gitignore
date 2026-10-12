@@ -1,0 +1,10 @@
+.env
+chrome_profile*/
+__pycache__/
+*.pyc
+tws_ui_dump.txt
+tws_ocr_debug.png
+screener_output.xlsx
+ATR_Monitor.xlsx
+*.xlsx~
+

@@ -1,0 +1,13 @@
+xlwings
+psycopg[binary]
+python-dotenv
+fastapi
+uvicorn[standard]
+pywinauto
+mss
+Pillow
+rapidocr-onnxruntime
+numpy
+ib_async
+pandas
+
