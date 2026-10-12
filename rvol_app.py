@@ -22,7 +22,7 @@ from rvol_db import (  # noqa: E402
 )
 
 app = FastAPI(title="RVOL history")
-REFRESH_MS = 60_000  # RVOL пишется раз в минуту
+REFRESH_MS = 1_000
 WINDOW_MINUTES = 60
 
 ensure_schema()
