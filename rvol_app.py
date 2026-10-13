@@ -9,13 +9,17 @@
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from datetime import date
+from typing import Optional
+
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from rvol_db import (  # noqa: E402
+    adjacent_day_with_data,
     ensure_schema,
     fetch_aligned_series,
     list_tickers_today_any,
@@ -28,24 +32,53 @@ WINDOW_MINUTES = 60
 ensure_schema()
 
 
+def _parse_day(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    return date.fromisoformat(value.strip()[:10])
+
+
+DAY_STORAGE_KEY = "rvol_selected_day"
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     tickers = list_tickers_today_any()
     links = "".join(
-        f'<li><a href="/t/{t}">{t}</a></li>' for t in tickers
-    ) or "<li>(no data today)</li>"
+        f'<li><a class="tlink" href="/t/{t}" data-ticker="{t}">{t}</a></li>' for t in tickers
+    ) or "<li>(no tickers yet)</li>"
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>RVOL</title>
 <style>
   body{{font:12px system-ui;margin:8px;background:#111;color:#ddd}}
   a{{color:#8ab4f8}} ul{{padding-left:16px;margin:4px 0}}
 </style></head>
-<body><ul>{links}</ul></body></html>"""
+<body>
+<ul>{links}</ul>
+<script>
+  const KEY = {DAY_STORAGE_KEY!r};
+  function todayStr() {{
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }}
+  const saved = localStorage.getItem(KEY) || todayStr();
+  for (const a of document.querySelectorAll('a.tlink')) {{
+    a.href = '/t/' + encodeURIComponent(a.dataset.ticker) + '?day=' + encodeURIComponent(saved);
+  }}
+</script>
+</body></html>"""
 
 
 @app.get("/t/{ticker}", response_class=HTMLResponse)
-def ticker_chart(ticker: str):
+def ticker_chart(ticker: str, day: Optional[str] = Query(None)):
     ticker = ticker.strip().upper()
+    # server default = today; client may override from localStorage
+    selected = _parse_day(day) or date.today()
+    initial_day = selected.isoformat()
+    has_url_day = "true" if _parse_day(day) is not None else "false"
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -60,6 +93,28 @@ def ticker_chart(ticker: str):
       width: 440px; height: 380px;
       display: flex; flex-direction: column;
       padding: 2px 6px 4px 2px;
+    }}
+    .toolbar {{
+      flex: 0 0 20px;
+      display: flex; align-items: center; gap: 4px;
+      padding: 0 2px 2px 2px;
+    }}
+    .toolbar a.home {{
+      color: #8ab4f8; text-decoration: none; font-size: 11px;
+      margin-right: 4px; line-height: 18px;
+    }}
+    .toolbar a.home:hover {{ color: #fff; }}
+    .toolbar button {{
+      background: #2a2a2a; color: #ccc; border: 1px solid #444;
+      width: 22px; height: 18px; line-height: 16px; cursor: pointer;
+      border-radius: 3px; font-size: 12px; padding: 0;
+    }}
+    .toolbar button:hover {{ background: #3a3a3a; color: #fff; }}
+    .toolbar button:disabled {{ opacity: 0.35; cursor: default; }}
+    #day {{
+      background: #1a1a1a; color: #ddd; border: 1px solid #444;
+      border-radius: 3px; height: 18px; font: 11px system-ui;
+      padding: 0 4px; color-scheme: dark;
     }}
     .pane {{
       flex: 1 1 0; min-height: 0;
@@ -89,6 +144,12 @@ def ticker_chart(ticker: str):
 </head>
 <body>
   <div id="wrap">
+    <div class="toolbar">
+      <a class="home" href="/" title="All tickers">← all</a>
+      <button type="button" id="prev-day" title="Previous day">‹</button>
+      <input type="date" id="day" value="{initial_day}">
+      <button type="button" id="next-day" title="Next day">›</button>
+    </div>
     <div class="pane">
       <div class="head"><span class="sym">{ticker} · IB</span><span class="meta" id="meta-ib">…</span></div>
       <div class="box"><canvas id="c-ib"></canvas></div>
@@ -101,6 +162,8 @@ def ticker_chart(ticker: str):
   </div>
   <script>
     const TICKER = {ticker!r};
+    const DAY_KEY = {DAY_STORAGE_KEY!r};
+    const HAS_URL_DAY = {has_url_day};
     const REFRESH_MS = {REFRESH_MS};
     const WINDOW = {WINDOW_MINUTES};
     const Y_DEFAULT_MAX = 3;   // шкала 0..3 по умолчанию
@@ -114,6 +177,82 @@ def ticker_chart(ticker: str):
     let refreshTimer = null;
     const hbar = document.getElementById('hbar');
     const hbarInner = document.getElementById('hbar-inner');
+    const dayInput = document.getElementById('day');
+    const prevBtn = document.getElementById('prev-day');
+    const nextBtn = document.getElementById('next-day');
+
+    function todayStr() {{
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return y + '-' + m + '-' + day;
+    }}
+
+    function isToday() {{
+      return (dayInput.value || todayStr()) === todayStr();
+    }}
+
+    function persistDay(day) {{
+      try {{ localStorage.setItem(DAY_KEY, day); }} catch (e) {{}}
+      const url = new URL(window.location.href);
+      url.searchParams.set('day', day);
+      history.replaceState(null, '', url);
+    }}
+
+    function resolveInitialDay() {{
+      if (HAS_URL_DAY && dayInput.value) return dayInput.value;
+      try {{
+        const saved = localStorage.getItem(DAY_KEY);
+        if (saved) return saved;
+      }} catch (e) {{}}
+      return todayStr();
+    }}
+
+    const bootDay = resolveInitialDay();
+    dayInput.value = bootDay;
+    persistDay(bootDay);
+
+    async function shiftDay(delta) {{
+      const cur = dayInput.value || todayStr();
+      try {{
+        const r = await fetch(
+          '/api/t/' + encodeURIComponent(TICKER) + '/adjacent'
+          + '?day=' + encodeURIComponent(cur)
+          + '&dir=' + (delta < 0 ? 'prev' : 'next')
+        );
+        if (r.ok) {{
+          const j = await r.json();
+          if (j.day) {{
+            dayInput.value = j.day;
+            onDayChange();
+            return;
+          }}
+        }}
+      }} catch (e) {{}}
+      // fallback: ±1 calendar day
+      const d = new Date(cur + 'T12:00:00');
+      d.setDate(d.getDate() + delta);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const next = y + '-' + m + '-' + day;
+      if (next > todayStr()) return;
+      dayInput.value = next;
+      onDayChange();
+    }}
+
+    function onDayChange() {{
+      initialView = true;
+      followLive = true;
+      persistDay(dayInput.value || todayStr());
+      refresh();
+      scheduleRefresh();
+    }}
+
+    dayInput.addEventListener('change', onDayChange);
+    prevBtn.addEventListener('click', () => shiftDay(-1));
+    nextBtn.addEventListener('click', () => shiftDay(1));
 
     function clamp(v, a, b) {{ return Math.max(a, Math.min(b, v)); }}
 
@@ -196,7 +335,16 @@ def ticker_chart(ticker: str):
     }}
 
     function setView(min, max, updateBar = true) {{
-      if (pointCount <= 0) return;
+      if (pointCount <= 0) {{
+        for (const c of charts) {{
+          c.options.scales.x.min = 0;
+          c.options.scales.x.max = WINDOW - 1;
+        }}
+        applyYScales();
+        if (updateBar) syncScrollbar();
+        for (const c of charts) c.update('none');
+        return;
+      }}
       const last = pointCount - 1;
       let size = Math.max(MIN_RANGE - 1, max - min);
       size = Math.min(size, Math.max(0, last));
@@ -206,14 +354,17 @@ def ticker_chart(ticker: str):
         c.options.scales.x.min = min;
         c.options.scales.x.max = max;
       }}
-      followLive = max >= last - 0.51;
+      followLive = isToday() && max >= last - 0.51;
       applyYScales();
       if (updateBar) syncScrollbar();
       for (const c of charts) c.update('none');
     }}
 
     function showLastHour() {{
-      if (pointCount <= 0) return;
+      if (pointCount <= 0) {{
+        setView(0, WINDOW - 1);
+        return;
+      }}
       if (pointCount <= WINDOW) setView(0, pointCount - 1);
       else setView(pointCount - WINDOW, pointCount - 1);
     }}
@@ -301,10 +452,19 @@ def ticker_chart(ticker: str):
 
     async function refresh() {{
       try {{
-        const r = await fetch('/api/t/' + encodeURIComponent(TICKER));
+        const day = dayInput.value || todayStr();
+        const r = await fetch(
+          '/api/t/' + encodeURIComponent(TICKER) + '?day=' + encodeURIComponent(day)
+        );
         if (!r.ok) {{
-          document.getElementById('meta-ib').textContent = 'no data';
-          document.getElementById('meta-tv').textContent = 'no data';
+          pointCount = 0;
+          chartIb.data.labels = [];
+          chartTv.data.labels = [];
+          chartIb.data.datasets[0].data = [];
+          chartTv.data.datasets[0].data = [];
+          showLastHour();
+          document.getElementById('meta-ib').textContent = '—';
+          document.getElementById('meta-tv').textContent = '—';
           return;
         }}
         const j = await r.json();
@@ -325,7 +485,7 @@ def ticker_chart(ticker: str):
           // первый показ — последние WINDOW минут; дальше зум/скролл не сбрасываем
           showLastHour();
           initialView = false;
-        }} else if (followLive) {{
+        }} else if (followLive && isToday()) {{
           // у живого края сохраняем ТЕКУЩИЙ размер окна (можно > WINDOW)
           const size = Math.min(Math.max(prevSize, MIN_RANGE - 1), last);
           setView(last - size, last);
@@ -350,6 +510,9 @@ def ticker_chart(ticker: str):
 
     function scheduleRefresh() {{
       if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = null;
+      // live poll only for today; historical days are static
+      if (!isToday()) return;
       refreshTimer = setInterval(() => {{
         // фоновые/свёрнутые вкладки не долбят API
         if (document.hidden) return;
@@ -358,7 +521,7 @@ def ticker_chart(ticker: str):
     }}
 
     document.addEventListener('visibilitychange', () => {{
-      if (!document.hidden) refresh();
+      if (!document.hidden && isToday()) refresh();
     }});
 
     refresh();
@@ -369,6 +532,20 @@ def ticker_chart(ticker: str):
 
 
 @app.get("/api/t/{ticker}")
-def api_ticker(ticker: str):
+def api_ticker(ticker: str, day: Optional[str] = Query(None)):
     ticker = ticker.strip().upper()
-    return fetch_aligned_series(ticker)
+    selected = _parse_day(day)  # None → today in fetch_aligned_series
+    return fetch_aligned_series(ticker, day=selected)
+
+
+@app.get("/api/t/{ticker}/adjacent")
+def api_adjacent(
+    ticker: str,
+    day: str = Query(...),
+    dir: str = Query("prev"),
+):
+    ticker = ticker.strip().upper()
+    selected = _parse_day(day) or date.today()
+    direction = -1 if dir.strip().lower() in ("prev", "-1", "back") else 1
+    found = adjacent_day_with_data(ticker, selected, direction)
+    return {"ticker": ticker, "from": selected.isoformat(), "day": found.isoformat() if found else None}

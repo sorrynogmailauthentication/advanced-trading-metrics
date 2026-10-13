@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
-from typing import Any, List, Optional, Sequence, Tuple
+from datetime import date, datetime
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import psycopg
 
@@ -73,15 +73,24 @@ def insert_ticks(
     return len(rows)
 
 
+def _as_day(day: Optional[Union[date, datetime]]) -> Optional[date]:
+    if day is None:
+        return None
+    if isinstance(day, datetime):
+        return day.date()
+    return day
+
+
 def fetch_ticker_series(
     ticker: str,
-    day: Optional[datetime] = None,
+    day: Optional[Union[date, datetime]] = None,
     source: str = "tv",
 ) -> List[dict[str, Any]]:
     """RVOL points for ticker/source, default = today."""
+    d = _as_day(day)
     with connect() as conn:
         with conn.cursor() as cur:
-            if day is None:
+            if d is None:
                 cur.execute(
                     """
                     SELECT ts, rvol
@@ -100,11 +109,11 @@ def fetch_ticker_series(
                     FROM rvol_ticks
                     WHERE ticker = %s
                       AND source = %s
-                      AND ts >= %s
-                      AND ts < %s + interval '1 day'
+                      AND ts >= %s::date
+                      AND ts < %s::date + interval '1 day'
                     ORDER BY ts
                     """,
-                    (ticker, source, day, day),
+                    (ticker, source, d, d),
                 )
             return [{"ts": r[0].isoformat(), "rvol": r[1]} for r in cur.fetchall()]
 
@@ -126,6 +135,7 @@ def list_tickers_today(source: str = "tv") -> List[str]:
 
 
 def list_tickers_today_any() -> List[str]:
+    """Tickers with any data today; if none, fall back to all known tickers."""
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -136,7 +146,63 @@ def list_tickers_today_any() -> List[str]:
                 ORDER BY ticker
                 """
             )
+            today = [r[0] for r in cur.fetchall()]
+            if today:
+                return today
+            cur.execute(
+                """
+                SELECT DISTINCT ticker
+                FROM rvol_ticks
+                ORDER BY ticker
+                """
+            )
             return [r[0] for r in cur.fetchall()]
+
+
+def latest_day_for_ticker(ticker: str) -> Optional[date]:
+    """Newest calendar day with any ticks for ticker, or None."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT (MAX(ts))::date
+                FROM rvol_ticks
+                WHERE ticker = %s
+                """,
+                (ticker,),
+            )
+            row = cur.fetchone()
+            return row[0] if row and row[0] is not None else None
+
+
+def adjacent_day_with_data(
+    ticker: str,
+    day: date,
+    direction: int,
+) -> Optional[date]:
+    """Next/prev calendar day that has ticks. direction: -1 prev, +1 next."""
+    with connect() as conn:
+        with conn.cursor() as cur:
+            if direction < 0:
+                cur.execute(
+                    """
+                    SELECT (MAX(ts))::date
+                    FROM rvol_ticks
+                    WHERE ticker = %s AND ts < %s::date
+                    """,
+                    (ticker, day),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT (MIN(ts))::date
+                    FROM rvol_ticks
+                    WHERE ticker = %s AND ts >= %s::date + interval '1 day'
+                    """,
+                    (ticker, day),
+                )
+            row = cur.fetchone()
+            return row[0] if row and row[0] is not None else None
 
 
 def _minute_key(ts_iso: str) -> str:
@@ -149,18 +215,24 @@ def _minute_key(ts_iso: str) -> str:
     return t.replace("Z", "")[:5]
 
 
-def fetch_aligned_series(ticker: str) -> dict[str, Any]:
+def fetch_aligned_series(
+    ticker: str,
+    day: Optional[Union[date, datetime]] = None,
+) -> dict[str, Any]:
     """
-    Общая шкала минут за сегодня: labels + ib[] + tv[].
-    Нет данных у источника → null (пустой бар).
+    Общая шкала минут за день: labels + ib[] + tv[].
+    day=None → сегодня. Нет данных у источника → null (пустой бар).
     """
-    ib = fetch_ticker_series(ticker, source="ib")
-    tv = fetch_ticker_series(ticker, source="tv")
+    d = _as_day(day)
+    ib = fetch_ticker_series(ticker, day=d, source="ib")
+    tv = fetch_ticker_series(ticker, day=d, source="tv")
     ib_map = {_minute_key(p["ts"]): p["rvol"] for p in ib}
     tv_map = {_minute_key(p["ts"]): p["rvol"] for p in tv}
     labels = sorted(set(ib_map) | set(tv_map))
+    day_out = d.isoformat() if d is not None else date.today().isoformat()
     return {
         "ticker": ticker,
+        "day": day_out,
         "labels": labels,
         "ib": [ib_map.get(m) for m in labels],
         "tv": [tv_map.get(m) for m in labels],
