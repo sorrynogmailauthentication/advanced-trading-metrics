@@ -35,7 +35,8 @@ except RuntimeError:
 
 BOOK = "ATR_Monitor.xlsx"
 SHEET = "Лист1"
-START_COL = "M"  # time, затем QQQ, затем тикеры
+START_COL = "N"  # time, затем QQQ, затем тикеры
+END_COL = "AH"  # wipe только M:AF, правее не трогаем
 
 HOST = "127.0.0.1"
 PORT = 7496  # 7496=live TWS, 7497=paper/Gateway
@@ -44,7 +45,7 @@ CLIENT_ID = 91
 ET = ZoneInfo("America/New_York")
 DEFAULT_START = dtime(9, 30)
 DEFAULT_END_LIVE = dtime(16, 0)
-DEFAULT_END_HIST = dtime(9, 50)
+DEFAULT_END_HIST = dtime(9, 40)
 GRACE_SEC = 3  # :03 каждой минуты, как rvol_logger
 
 
@@ -202,13 +203,20 @@ def _old_last_row(sheet, start) -> int:
 
 
 def _wipe_block(sheet, ordered: list[str]) -> None:
-    """Затираем блок данных только при старте (без clear_contents на огромном range)."""
-    n_cols = 1 + len(ordered)
+    """Затираем только M:AF при старте (без clear_contents на огромном range)."""
     start = sheet.range(f"{START_COL}1")
     old_last = _old_last_row(sheet, start)
     wipe_rows = max(old_last, 2)
-    start.value = [[None] * n_cols for _ in range(wipe_rows)]
-    start.value = [["time", *ordered]]
+    rng = sheet.range(f"{START_COL}1:{END_COL}{wipe_rows}")
+    n_cols = rng.columns.count
+    rng.value = [[None] * n_cols for _ in range(wipe_rows)]
+    header = ["time", *ordered]
+    if len(header) > n_cols:
+        raise SystemExit(
+            f"Слишком много колонок ({len(header)}): блок {START_COL}:{END_COL} "
+            f"вмещает {n_cols} (time + QQQ + тикеры)"
+        )
+    start.value = [header]
     sheet.range(f"{START_COL}1").number_format = "@"
 
 
