@@ -25,7 +25,28 @@ from zoneinfo import ZoneInfo
 import xlwings as xw
 from ib_insync import IB, Stock
 
-from tikers import TICKERS, load_tickers_from_excel
+# from tikers import TICKERS, load_tickers_from_excel
+
+TICKERS = [
+    "AAPL",
+    "AMD",
+    "AMZN",
+    "AVGO",
+    "CRWD",
+    "GOOGL",
+    "HOOD",
+    "INTC",
+    "META",
+    "MRVL", 
+    "MSFT",
+    "MU",
+    "NFLX",
+    "NVDA",
+    "SNDK",
+    "SPCX",
+    "TSLA",
+    "TSM",
+]
 
 # Python 3.12+: нет default event loop в MainThread
 try:
@@ -175,7 +196,7 @@ def _fetch_all(
         except Exception as e:
             print(f"FAIL: {e}")
             series[sym] = {}
-        time.sleep(0.6)
+        time.sleep(0.5)
     return series
 
 
@@ -385,7 +406,7 @@ def run_live(t0: dtime, t1: dtime) -> None:
                 next_excel_row += 1
             except Exception as e:
                 print(f"Ошибка снимка {bar_ts.strftime('%H:%M')}: {e}")
-                time.sleep(1)
+                time.sleep(0.5)
     finally:
         ib.disconnect()
 
