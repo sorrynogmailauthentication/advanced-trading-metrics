@@ -27,11 +27,11 @@ TICKER_COL = "L"  # тикеры на Лист2
 # Подставьте буквы колонок с RTD High/Low на Лист2
 LIVE_HIGH_COL = "E"  # RTD High
 LIVE_LOW_COL = "D"   # RTD Low
-ORB_HIGH_COL = "F"  # снимок High @ 9:36 (статические значения)
-ORB_LOW_COL = "G"   # снимок Low @ 9:36
+ORB_HIGH_COL = "F"  # снимок High @ 9:35:3 (статические значения)
+ORB_LOW_COL = "G"   # снимок Low @ 9:35:3
 
 # Локальное время ПК. Для NYSE при ПК в UTC+3 обычно 16:36:00.
-SNAP_TIME = dtime(16, 36, 0)
+SNAP_TIME = dtime(16, 35, 3)
 
 # Повтор, если в момент снимка часть ячеек ещё пустая / ошибка RTD
 RETRY_SECONDS = 3

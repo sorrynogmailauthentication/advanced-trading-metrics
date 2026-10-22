@@ -1,5 +1,5 @@
 """
-RTH 1m volume → ATR_Monitor.xlsx / лист RVOL.
+RTH 1m volume → ATR_Monitor.xlsx / лист с именем тикера.
 
 Один тикер, последние 90 календарных дней (выходные пропускаем,
 праздники без баров не попадают в колонки). 10-минутный RVOL
@@ -41,7 +41,6 @@ SYMBOL = "AAPL"
 LOOKBACK_DAYS = 90
 
 BOOK = "ATR_Monitor.xlsx"
-SHEET = "RVOL"
 # A1:CZ391 — данные. Правее и ниже не трогаем.
 CLEAR_COL = "CZ"
 RTH_START = dtime(9, 30)
@@ -57,7 +56,7 @@ ET = ZoneInfo("America/New_York")
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Export RTH 1m volume to Excel sheet RVOL")
+    p = argparse.ArgumentParser(description="Export RTH 1m volume to an Excel sheet named as the ticker")
     p.add_argument("--symbol", default=SYMBOL, help=f"One ticker (default {SYMBOL})")
     p.add_argument(
         "--days",
@@ -172,12 +171,12 @@ def _fetch_day_volume(
     return out
 
 
-def _sheet():
+def _sheet(name: str):
     wb = xw.Book(BOOK)
     for s in wb.sheets:
-        if s.name == SHEET:
+        if s.name == name:
             return s
-    return wb.sheets.add(SHEET)
+    return wb.sheets.add(name)
 
 
 def _write(sheet, minutes: list[dtime], days: list[date], volume: dict[tuple[date, dtime], float]) -> None:
@@ -254,11 +253,11 @@ def main() -> None:
     if not kept:
         raise SystemExit(f"Нет RTH баров {symbol} за последние {args.days} дней.")
 
-    sheet = _sheet()
+    sheet = _sheet(symbol)
     _write(sheet, minutes, kept, volume)
     print(
         f"Wrote {len(minutes)} minutes x {len(kept)} days "
-        f"-> {BOOK}/{SHEET} ({symbol})"
+        f"-> {BOOK}/{symbol}"
     )
 
 

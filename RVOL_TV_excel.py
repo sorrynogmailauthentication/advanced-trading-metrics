@@ -20,7 +20,7 @@ from tikers import load_tickers_from_excel
 
 load_dotenv()
 
-CHROMIUM_VERSION = 153
+CHROMIUM_VERSION = 155
 SCREENER_URL = os.getenv(
     "SCREENER_URL",
     "https://www.tradingview.com/screener/YOUR_SCREENER_ID/",
@@ -149,16 +149,16 @@ def update_live_excel(data):
         wb = xw.Book("ATR_Monitor.xlsx")
         sheet = wb.sheets["Лист1"]
 
-        last_row = sheet.range("G" + str(sheet.cells.last_cell.row)).end("up").row
+        last_row = sheet.range("F" + str(sheet.cells.last_cell.row)).end("up").row
         if last_row < 1:
             last_row = 1
-        sheet.range(f"G1:H{max(last_row, len(data) + 2)}").clear_contents()
+        sheet.range(f"F1:G{max(last_row, len(data) + 2)}").clear_contents()
 
-        sheet.range("G1").value = OUT_HEADERS
+        sheet.range("F1").value = OUT_HEADERS
         if data:
-            sheet.range("G2").value = data
+            sheet.range("F2").value = data
 
-        print(f"✅ G:H обновлены (тикеров: {len(data)})")
+        print(f"✅ F:G обновлены (тикеров: {len(data)})")
     except Exception as e:
         print(f"❌ Ошибка при записи в Excel: {e}")
 

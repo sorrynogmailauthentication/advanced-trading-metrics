@@ -7,4 +7,5 @@ tws_ocr_debug.png
 screener_output.xlsx
 ATR_Monitor.xlsx
 *.xlsx~
+*.sqlite
 
