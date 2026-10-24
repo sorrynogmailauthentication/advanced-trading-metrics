@@ -5,8 +5,8 @@ RTH 1m volume → rvol_volume.sqlite.
 чтобы повторный запуск не качал уже полный день.
 
 День качаем снова, если по тикеру в базе больше 0 и меньше 390 баров
-(обрыв, раннее закрытие, сегодняшний неполный день). 0 баров — дня нет,
-тоже качаем. 390 и больше — пропускаем.
+(обрыв, раннее закрытие). 0 баров — дня нет, тоже качаем.
+390 и больше — пропускаем. Текущий день ET не качаем.
 
 Тикеры без --symbol: QQQ, список NASDAQ, SPY, список NYSE
 из export_corr_bars_hist.py.
@@ -81,7 +81,7 @@ def _parse_args() -> argparse.Namespace:
         "--days",
         type=int,
         default=LOOKBACK_DAYS,
-        help=f"Calendar lookback through today ET (default {LOOKBACK_DAYS})",
+        help=f"Calendar lookback before today ET (default {LOOKBACK_DAYS})",
     )
     p.add_argument(
         "--to-excel",
@@ -187,7 +187,7 @@ def _session_days(today: date, lookback_days: int) -> list[date]:
     start = today - timedelta(days=lookback_days)
     days: list[date] = []
     cur = start
-    while cur <= today:
+    while cur < today:
         if cur.weekday() < 5:
             days.append(cur)
         cur += timedelta(days=1)
@@ -398,6 +398,8 @@ def main() -> None:
 
         today = datetime.now(ET).date()
         days = _session_days(today, args.days)
+        if not days:
+            raise SystemExit(f"Нет прошлых будней в окне {args.days} дней до {today.isoformat()}.")
         print(
             f"{len(symbols)} tickers, {days[0].isoformat()}..{days[-1].isoformat()} "
             f"({len(days)} будней), пауза {PACE_SEC}с между запросами к IBKR"

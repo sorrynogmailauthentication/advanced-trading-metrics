@@ -70,8 +70,8 @@ BOOK = "ATR_Monitor.xlsx"
 
 # sheet, close_start, close_end, vol_start, benchmark, tickers
 BLOCKS = (
-    ("Лист1", "N", "AE", "BO", "QQQ", NASDAQ_TICKERS),
-    ("Лист3", "N", "AA", "BC", "SPY", NYSE_TICKERS),
+    ("Лист1", "N", "AE", "CE", "QQQ", NASDAQ_TICKERS),
+    ("Лист3", "N", "AA", "BO", "SPY", NYSE_TICKERS),
 )
 
 HOST = "127.0.0.1"
