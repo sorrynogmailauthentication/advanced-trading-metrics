@@ -77,6 +77,8 @@ BLOCKS = (
 HOST = "127.0.0.1"
 PORT = 7496  # 7496=live TWS, 7497=paper/Gateway
 CLIENT_ID = 92
+# Сколько reqHistoricalData одновременно. Поднимать, пока IBKR не начнёт отклонять.
+WAVE_SIZE = 20
 
 ET = ZoneInfo("America/New_York")
 DEFAULT_START = dtime(9, 30)
@@ -170,29 +172,14 @@ def _end_col(start_col: str, n_cols: int) -> str:
     return _idx_col(_col_idx(start_col) + n_cols - 1)
 
 
-def _fetch_bars(
-    ib: IB,
-    symbol: str,
+def _series_from_bars(
+    bars,
     *,
     session_day: date,
-    end_dt: str,
     t0: dtime,
     t1: dtime,
-    duration: str = "1 D",
 ) -> dict[datetime, tuple[float, float]]:
     """Минута → (close, volume) одного и того же 1m бара."""
-    contract = Stock(symbol, "SMART", "USD")
-    ib.qualifyContracts(contract)
-    bars = ib.reqHistoricalData(
-        contract,
-        endDateTime=end_dt,
-        durationStr=duration,
-        barSizeSetting="1 min",
-        whatToShow="TRADES",
-        useRTH=True,
-        formatDate=1,
-        keepUpToDate=False,
-    )
     out: dict[datetime, tuple[float, float]] = {}
     for bar in bars:
         key = _norm_bar_ts(bar.date)
@@ -214,24 +201,59 @@ def _fetch_all(
     t1: dtime,
     duration: str = "1 D",
 ) -> dict[str, dict[datetime, tuple[float, float]]]:
+    # Ошибка запроса (в т.ч. pacing 162) приходит исключением по этому символу,
+    # а не пустым набором баров.
+    ib.RaiseRequestErrors = True
+    contracts = [Stock(sym, "SMART", "USD") for sym in ordered]
+    qualified = ib.run(
+        asyncio.gather(
+            *(ib.qualifyContractsAsync(c) for c in contracts),
+            return_exceptions=True,
+        )
+    )
     series: dict[str, dict[datetime, tuple[float, float]]] = {}
-    for i, sym in enumerate(ordered):
-        try:
-            print(f"[{i + 1}/{len(ordered)}] {sym} ...", end=" ", flush=True)
-            series[sym] = _fetch_bars(
-                ib,
-                sym,
-                session_day=session_day,
-                end_dt=end_dt,
-                t0=t0,
-                t1=t1,
-                duration=duration,
-            )
-            print(f"{len(series[sym])} bars")
-        except Exception as e:
-            print(f"FAIL: {e}")
+    ready: list[Stock] = []
+    for sym, contract, result in zip(ordered, contracts, qualified):
+        if isinstance(result, Exception) or not result:
+            err = result if isinstance(result, Exception) else "contract not qualified"
+            print(f"{sym} FAIL: {err}")
             series[sym] = {}
-        time.sleep(0.7)
+            continue
+        ready.append(contract)
+
+    n_waves = (len(ready) + WAVE_SIZE - 1) // WAVE_SIZE if ready else 0
+    for wave, start in enumerate(range(0, len(ready), WAVE_SIZE), start=1):
+        chunk = ready[start : start + WAVE_SIZE]
+        names = ", ".join(c.symbol for c in chunk)
+        print(f"wave {wave}/{n_waves} ({len(chunk)}): {names}", flush=True)
+        fetched = ib.run(
+            asyncio.gather(
+                *(
+                    ib.reqHistoricalDataAsync(
+                        contract,
+                        endDateTime=end_dt,
+                        durationStr=duration,
+                        barSizeSetting="1 min",
+                        whatToShow="TRADES",
+                        useRTH=True,
+                        formatDate=1,
+                        keepUpToDate=False,
+                    )
+                    for contract in chunk
+                ),
+                return_exceptions=True,
+            )
+        )
+        for contract, bars in zip(chunk, fetched):
+            sym = contract.symbol
+            if isinstance(bars, Exception):
+                print(f"  {sym} FAIL: {bars}")
+                series[sym] = {}
+                continue
+            series[sym] = _series_from_bars(
+                bars, session_day=session_day, t0=t0, t1=t1
+            )
+            print(f"  {sym} {len(series[sym])} bars")
     return series
 
 
@@ -408,7 +430,12 @@ def main():
     t1 = _parse_hhmm(args.end)
     if t1 < t0:
         raise SystemExit("--end must be >= --start")
-    run_oneshot(date.fromisoformat(args.date), t0, t1)
+    started = time.perf_counter()
+    try:
+        run_oneshot(date.fromisoformat(args.date), t0, t1)
+    finally:
+        elapsed = time.perf_counter() - started
+        print(f"Done in {elapsed:.1f}s (wave {WAVE_SIZE})")
 
 
 if __name__ == "__main__":
