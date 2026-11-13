@@ -76,9 +76,11 @@ BLOCKS = (
 
 HOST = "127.0.0.1"
 PORT = 7496  # 7496=live TWS, 7497=paper/Gateway
-CLIENT_ID = 92
+CLIENT_ID = 94
 # Сколько reqHistoricalData одновременно. Поднимать, пока IBKR не начнёт отклонять.
 WAVE_SIZE = 20
+# Сек на один тикер. NVDA/NFLX ~15s; дольше = hang → пустые ячейки и дальше.
+HIST_TIMEOUT = 2.0
 
 ET = ZoneInfo("America/New_York")
 DEFAULT_START = dtime(9, 30)
@@ -221,39 +223,45 @@ def _fetch_all(
             continue
         ready.append(contract)
 
+    async def _one(contract: Stock):
+        sym = contract.symbol
+        started = time.perf_counter()
+        try:
+            bars = await ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime=end_dt,
+                durationStr=duration,
+                barSizeSetting="1 min",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+                keepUpToDate=False,
+                timeout=HIST_TIMEOUT,
+            )
+        except Exception as e:
+            return sym, {}, f"FAIL ({time.perf_counter() - started:.1f}s): {e}"
+        elapsed = time.perf_counter() - started
+        # Timeout в ib_insync: cancel + пустой список баров (не исключение).
+        if not bars and elapsed >= HIST_TIMEOUT - 0.5:
+            return sym, {}, f"TIMEOUT ({elapsed:.1f}s) — empty, continue"
+        out = _series_from_bars(bars, session_day=session_day, t0=t0, t1=t1)
+        return sym, out, f"{len(out)} bars ({elapsed:.1f}s)"
+
     n_waves = (len(ready) + WAVE_SIZE - 1) // WAVE_SIZE if ready else 0
     for wave, start in enumerate(range(0, len(ready), WAVE_SIZE), start=1):
         chunk = ready[start : start + WAVE_SIZE]
         names = ", ".join(c.symbol for c in chunk)
         print(f"wave {wave}/{n_waves} ({len(chunk)}): {names}", flush=True)
         fetched = ib.run(
-            asyncio.gather(
-                *(
-                    ib.reqHistoricalDataAsync(
-                        contract,
-                        endDateTime=end_dt,
-                        durationStr=duration,
-                        barSizeSetting="1 min",
-                        whatToShow="TRADES",
-                        useRTH=True,
-                        formatDate=1,
-                        keepUpToDate=False,
-                    )
-                    for contract in chunk
-                ),
-                return_exceptions=True,
-            )
+            asyncio.gather(*(_one(c) for c in chunk), return_exceptions=True)
         )
-        for contract, bars in zip(chunk, fetched):
-            sym = contract.symbol
-            if isinstance(bars, Exception):
-                print(f"  {sym} FAIL: {bars}")
-                series[sym] = {}
+        for item in fetched:
+            if isinstance(item, Exception):
+                print(f"  FAIL: {item}")
                 continue
-            series[sym] = _series_from_bars(
-                bars, session_day=session_day, t0=t0, t1=t1
-            )
-            print(f"  {sym} {len(series[sym])} bars")
+            sym, data, note = item
+            series[sym] = data
+            print(f"  {sym} {note}")
     return series
 
 
