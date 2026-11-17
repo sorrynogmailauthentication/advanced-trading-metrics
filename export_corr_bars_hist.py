@@ -11,6 +11,7 @@ Volume — той же минуты, тем же порядком колонок
 
   python export_corr_bars_hist.py --date 2026-10-13
   python export_corr_bars_hist.py --date 2026-10-13 --start 09:30 --end 16:00
+  python export_corr_bars_ui.py
 """
 
 from __future__ import annotations
@@ -127,7 +128,16 @@ def _ordered_symbols(benchmark: str, tickers: list[str]) -> list[str]:
     return ordered
 
 
+def _ensure_event_loop() -> None:
+    """ib_insync нужен loop в текущем потоке (GUI Run идёт не в MainThread)."""
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 def _connect() -> IB:
+    _ensure_event_loop()
     ib = IB()
     for port in (PORT, 7497, 7496):
         try:
@@ -140,6 +150,7 @@ def _connect() -> IB:
 
 
 def _ib_end_datetime(session_day: date, *, is_today: bool) -> str:
+    # IB: "yyyymmdd hh:mm:ss US/Eastern" (error 10314 if truncated to date-only).
     if is_today:
         return ""
     return f"{session_day.strftime('%Y%m%d')} 16:05:00 US/Eastern"
