@@ -6,8 +6,8 @@ Volume — той же минуты, тем же порядком колонок
 Колонка time — чистое время Excel (1899-12-30 hh:mm), как на листе RVOL.
 Дата сессии пишется отдельно в CI3.
 
-  NASDAQ vs QQQ → Лист1 / closes N:AE, volume с BO
-  NYSE   vs SPY → Лист3 / closes N:AA, volume с BC
+  Лист1 vs QQQ — тикеры из Лист2!L (tikers.py)
+  closes N:AE, volume с CE (тот же порядок колонок)
 
   python export_corr_bars_hist.py --date 2026-10-13
   python export_corr_bars_hist.py --date 2026-10-13 --start 09:30 --end 16:00
@@ -25,56 +25,21 @@ from zoneinfo import ZoneInfo
 import xlwings as xw
 from ib_insync import IB, Stock
 
+from tikers import load_tickers_from_excel
+
 # Python 3.12+: нет default event loop в MainThread
 try:
     asyncio.get_event_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-# NASDAQ vs QQQ → Лист1 N:AH. Без TSM и HOOD.
-NASDAQ_TICKERS = [
-    "AAPL",
-    "AMD",
-    "AMZN",
-    "AVGO",
-    "CRWD",
-    "GOOGL",
-    "INTC",
-    "META",
-    "MRVL",
-    "MSFT",
-    "MU",
-    "NFLX",
-    "NVDA",
-    "SNDK",
-    "SPCX",
-    "TSLA",
-]
-
-# NYSE vs SPY → Лист3 N:AA.
-NYSE_TICKERS = [
-    "PLTR",
-    "PANW",
-    "LLY",
-    "WMT",
-    "JPM",
-    "AMAT",
-    "XOM",
-    "V",
-    "BAC",
-    "DELL",
-    "CRM",
-    "ORCL",
-]
-
 BOOK = "ATR_Monitor.xlsx"
 
-# sheet, close_start, close_end, vol_start, benchmark, tickers
-BLOCKS = (
-    ("Лист1", "N", "AE", "CE", "QQQ", NASDAQ_TICKERS),
-    ("Лист3", "N", "AA", "BO", "SPY", NYSE_TICKERS),
-)
-
+CORR_SHEET = "Лист1"
+CORR_BENCHMARK = "QQQ"
+CORR_CLOSE_START = "N"
+CORR_CLOSE_END = "AN"
+CORR_VOL_START = "DO"
 HOST = "127.0.0.1"
 PORT = 7496  # 7496=live TWS, 7497=paper/Gateway
 CLIENT_ID = 94
@@ -95,7 +60,7 @@ def _parse_hhmm(text: str) -> dtime:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Export historic 1m IBKR bars to Excel Лист3")
+    p = argparse.ArgumentParser(description="Export historic 1m IBKR bars to Excel Лист1")
     p.add_argument(
         "--date",
         required=True,
@@ -118,7 +83,9 @@ def _parse_args() -> argparse.Namespace:
 def _ordered_symbols(benchmark: str, tickers: list[str]) -> list[str]:
     names = [s.strip().upper() for s in tickers if str(s).strip()]
     if not names:
-        raise SystemExit(f"Список для {benchmark} пуст — заполни его в export_corr_bars_hist.py")
+        raise SystemExit(
+            f"Список для {benchmark} пуст — заполни Лист2!L в {BOOK}"
+        )
     ordered: list[str] = []
     seen: set[str] = set()
     for s in [benchmark, *names]:
@@ -351,6 +318,9 @@ def _write_block(
         )
     n_rows = 1 + len(rows)
     old_last = _old_last_row(sheet, start_col)
+    # Сначала весь запас start:end — иначе при укороченном списке тикеров справа останется мусор.
+    clear_to = max(old_last, n_rows)
+    sheet.range(f"{start_col}1:{end_col}{clear_to}").value = None
     sheet.range(f"{start_col}1").value = [header] + rows
     sheet.range(f"{start_col}1").number_format = "@"
     if n_rows >= 2:
@@ -358,8 +328,6 @@ def _write_block(
         if volume and n_cols >= 2:
             data_col = _idx_col(_col_idx(start_col) + 1)
             sheet.range(f"{data_col}2:{end_col}{n_rows}").number_format = "#,##0"
-    if old_last > n_rows:
-        sheet.range(f"{start_col}{n_rows + 1}:{end_col}{old_last}").value = None
 
 
 def _export_block(
@@ -391,7 +359,9 @@ def _export_block(
 
     close_rows = [_row_for_minute(ts, ordered, series, 0) for ts in all_times]
     vol_rows = [_row_for_minute(ts, ordered, series, 1) for ts in all_times]
-    vol_end = _end_col(vol_start, 1 + len(ordered))
+    # Тот же запас ширины, что у closes (start_col:end_col).
+    n_reserved = _col_idx(end_col) - _col_idx(start_col) + 1
+    vol_end = _end_col(vol_start, n_reserved)
     sheet = _sheet(sheet_name)
     state = _pause_excel(sheet)
     try:
@@ -407,6 +377,19 @@ def _export_block(
 
 
 def run_oneshot(session_day: date, t0: dtime, t1: dtime) -> None:
+    # Книга уже открыта (UI/рабочий Excel) — без activate, чтобы не дёргать фокус.
+    tickers = load_tickers_from_excel(activate=False)
+    if not tickers:
+        raise SystemExit(f"Лист2!L пуст — открой {BOOK} и заполни колонку L")
+
+    # time + QQQ + tickers; запись в запас CORR_CLOSE_START:CORR_CLOSE_END.
+    need_end = _end_col(CORR_CLOSE_START, 1 + 1 + len(tickers))
+    if _col_idx(need_end) > _col_idx(CORR_CLOSE_END):
+        raise SystemExit(
+            f"Слишком много тикеров ({len(tickers)}): closes нужно до {need_end}, "
+            f"запас на {CORR_SHEET} только {CORR_CLOSE_START}:{CORR_CLOSE_END}"
+        )
+
     today_et = datetime.now(ET).date()
     is_today = session_day == today_et
     end_dt = _ib_end_datetime(session_day, is_today=is_today)
@@ -420,20 +403,19 @@ def run_oneshot(session_day: date, t0: dtime, t1: dtime) -> None:
     ib = _connect()
     written = 0
     try:
-        for sheet_name, start_col, end_col, vol_start, benchmark, tickers in BLOCKS:
-            written += _export_block(
-                ib,
-                sheet_name=sheet_name,
-                start_col=start_col,
-                end_col=end_col,
-                vol_start=vol_start,
-                benchmark=benchmark,
-                tickers=tickers,
-                session_day=session_day,
-                end_dt=end_dt,
-                t0=t0,
-                t1=t1,
-            )
+        written = _export_block(
+            ib,
+            sheet_name=CORR_SHEET,
+            start_col=CORR_CLOSE_START,
+            end_col=CORR_CLOSE_END,
+            vol_start=CORR_VOL_START,
+            benchmark=CORR_BENCHMARK,
+            tickers=tickers,
+            session_day=session_day,
+            end_dt=end_dt,
+            t0=t0,
+            t1=t1,
+        )
     finally:
         ib.disconnect()
 

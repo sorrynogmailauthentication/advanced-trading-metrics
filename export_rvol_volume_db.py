@@ -8,8 +8,7 @@ RTH 1m volume → rvol_volume.sqlite.
 (обрыв, раннее закрытие). 0 баров — дня нет, тоже качаем.
 390 и больше — пропускаем. Текущий день ET не качаем.
 
-Тикеры без --symbol: QQQ, список NASDAQ, SPY, список NYSE
-из export_corr_bars_hist.py.
+Тикеры без --symbol: QQQ + список из Лист2!L (tikers.py).
 
   python export_rvol_volume_db.py
   python export_rvol_volume_db.py --symbol NVDA --days 90
@@ -33,7 +32,7 @@ from zoneinfo import ZoneInfo
 import xlwings as xw
 from ib_insync import IB, Stock
 
-from export_corr_bars_hist import NASDAQ_TICKERS, NYSE_TICKERS
+from tikers import load_tickers_from_excel
 
 try:
     asyncio.get_event_loop()
@@ -60,9 +59,11 @@ ET = ZoneInfo("America/New_York")
 
 
 def _all_symbols() -> list[str]:
+    """QQQ + тикеры из Лист2!L (как export_corr_bars_hist)."""
+    tickers = load_tickers_from_excel()
     ordered: list[str] = []
     seen: set[str] = set()
-    for raw in ["QQQ", *NASDAQ_TICKERS, "SPY", *NYSE_TICKERS]:
+    for raw in ["QQQ", *tickers]:
         symbol = str(raw).strip().upper()
         if symbol and symbol not in seen:
             seen.add(symbol)
@@ -75,7 +76,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--symbol",
         action="append",
-        help="One ticker. Repeat for several. Default: all lists from export_corr_bars_hist.py",
+        help="One ticker. Repeat for several. Default: QQQ + Лист2!L",
     )
     p.add_argument(
         "--days",
@@ -388,7 +389,7 @@ def main() -> None:
         else _all_symbols()
     )
     if not symbols:
-        raise SystemExit("Список тикеров пуст")
+        raise SystemExit(f"Список тикеров пуст — открой {BOOK} и заполни Лист2!L")
 
     conn = _db()
     try:
